@@ -111,9 +111,21 @@ python -m pytest -q
 
 The suite checks CSV reading, price and stock logic, basic order protection, policy lookup, SQLite history, tool usage, and the Groq-to-fallback switch when an HTTP `429` failure is simulated. It also verifies that an HTTP `400` error is never masked by a fallback retry.
 
-**Checkpoint status:** at the latest verified checkpoint, the offline suite passed **60/60** (independently re-run and confirmed by a reviewing architect pass). This number reflects the offline, mocked-provider suite only — it says nothing about live-model response quality.
+**Checkpoint status:** at the latest verified checkpoint, the offline suite passed **69/69** (independently re-run and confirmed by a reviewing architect pass). This number reflects the offline, mocked-provider suite only — it says nothing about live-model response quality.
 
 ### Real-API demonstration (may consume quota/credits)
+
+**Fifth, non-trivial hybrid conversation (real Gemini run):**
+
+```bash
+# Two-turn order-status + delivery-policy scenario; demo email stays out of logs
+GROQ_API_KEY= python teste_hibrido.py
+```
+
+The script uses fictional order 8 from the supplied CSVs. The agent must request the registered email before revealing order details, call both `status_pedido` and `consultar_politicas` across the conversation, and never promise an address change. The PDF specifies shipping rules but **does not explicitly authorize or prohibit changing an address after dispatch**, so the agent must hand off that question to human support. The verified, redacted real-API capture is in `exemplos/conversa_hibrida.md`. This supplements the existing four real conversations, bringing the demonstration set to **five**.
+
+**Factual fidelity checks:** `avaliacao.py` implements targeted, deterministic checks that compare prices and stock explicitly cited alongside a known product against live CSV tool results, and detect selected contradictions of PDF rules (regret period, noncumulative PIX promotions, and unsupported address-change guarantees). `test_atendimento.py` now runs those checks on catalog/policy demos; `tests/test_avaliacao.py` deliberately inserts false values to check that they are rejected. These checks do **not** establish overall semantic faithfulness, recover facts not stated in the response, or replace human review.
+
 
 ```bash
 python test_atendimento.py
@@ -158,7 +170,7 @@ If Groq rate-limits the requests and a fallback is configured, the agent tries t
 - **Policies:** `policies.py` extracts text from the PDF with `pypdf` and selects pages based on the subject. Every result includes its source page.
 - **Prompt:** `agent.py` instructs the model to request data from the tools rather than invent information, to respond courteously, and to ask for human intervention on ambiguous policy questions.
 
-This is **retrieval by source-selection rules**, not semantic RAG with embeddings. That was a deliberate simplicity choice.
+This is **retrieval by source-selection rules**, not semantic RAG with embeddings. That was a deliberate simplicity choice. We also intentionally avoided a LangGraph dependency or LLM-generated SQL: the brief allows a hybrid tool-calling design, and the supplied PDF is eight pages while the CSV tables are small. Explicit Python read-only tools and bounded orchestration make the solution easier to test and audit. LangGraph, vector embeddings, or a parameterized relational database would be reasonable upgrades only if requirements and data scale justified them.
 
 ### Tool contract
 
@@ -221,11 +233,13 @@ These ambiguities are documented, not hidden. Artefact's brief allows a reasonab
 ├── providers.py                # providers and fallback
 ├── tools.py                    # CSV queries + policy lookup
 ├── policies.py                 # relevant PDF page retrieval
+├── avaliacao.py                # focused factual-consistency checks
 ├── history.py                  # SQLite (text messages only)
-├── test_atendimento.py         # demo using the real API
+├── test_atendimento.py         # four original real-API scenarios
+├── teste_hibrido.py            # fifth: two-turn order + policy scenario
 ├── tests/                      # offline pytest tests
 ├── data/                       # 6 CSVs and the challenge manual
-├── exemplos/                   # guidance and captured conversations
+├── exemplos/                   # guidance and captured conversations, incl. conversa_hibrida.md
 ├── .env.example                # configuration template without credentials
 ├── .gitignore
 ├── requirements.txt
@@ -233,6 +247,8 @@ These ambiguities are documented, not hidden. Artefact's brief allows a reasonab
 ```
 
 ## 8. Known limitations / next steps
+
+- The targeted factual evaluator cannot guarantee general answer accuracy; only explicitly detected claims about prices, stock and selected policy rules are checked. Future work: capture source tool outputs per turn and evaluate evidence-based factual consistency and retrieval coverage more broadly, with privacy-safe traces.
 
 - The model may **fail to call a tool** even when the prompt calls for it; real scenarios must verify tool calls, and orchestration can be reinforced if it fails. The captured log shows a different failure mode: the tool was called, but the model contradicted the returned products with a false "no results" answer.
 - Products, stock, prices, orders, and promotions are **static challenge data**; there is no synchronization with a real store or carrier tracking.
@@ -255,6 +271,8 @@ This README's English translation, the `providers.py` fallback-diagnostics impro
 The Gemini fallback replaced the optional OpenRouter integration in a subsequent, supervised iteration: **ChatGPT** defined the architecture and test criteria, **Claude Code** implemented the adapter configuration and mocked tests, and the result was independently reviewed with **60 passing offline tests**. The real Google API was subsequently tested with an active local key: a Gemini-only catalog conversation passed (1/1), including `buscar_produtos` and a final answer faithful to the CSV. A separate integration test simulated Groq HTTP 429 (without calling the real Groq API), then sent the existing chat history to the **real Gemini API**; Gemini returned a valid tool call and final answer. These checks establish a working fallback integration, but the primary failure was simulated rather than induced against Groq's live quota.
 
 A later regression found that a Groq-generated tool call followed by Groq 429 caused Gemini 400 when the router tried to transfer the in-progress Groq tool trace. **ChatGPT** reproduced and diagnosed the failure; **Claude Code** implemented the provider pinning and safe turn restart; ChatGPT reviewed the diff, corrected a Python-version issue in the new test, and verified the fix with offline tests and a controlled real Gemini call.
+
+**Latest supervised iteration:** after reviewing the candidate's architecture research, **ChatGPT** directly implemented the fifth hybrid order/policy scenario (`teste_hibrido.py`), targeted price/stock/policy consistency checks (`avaliacao.py`, `tests/test_avaliacao.py`) and scenario checks in `test_atendimento.py`. ChatGPT reviewed the fictional CSVs and policy PDF, corrected a real model assertion unsupported by the manual, verified the fifth conversation against the actual Gemini API, and ran the full **69-test** offline suite. Claude Code remains disclosed above as the earlier implementation Builder; the candidate remains responsible for reviewing, understanding and defending every change.
 
 Responsibility for understanding, testing, and explaining the solution in the interview belongs to the candidate. The Git history should reflect real increments, with no retroactive artificial commits.
 
