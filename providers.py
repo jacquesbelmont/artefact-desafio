@@ -146,12 +146,28 @@ class RoteadorProvedores:
             ))
         return cls(provedores)
 
-    def completar(self, mensagens: list[dict], ferramentas: list[dict]) -> RespostaModelo:
+    def completar(
+        self,
+        mensagens: list[dict],
+        ferramentas: list[dict],
+        *,
+        provedor_fixo: str | None = None,
+    ) -> RespostaModelo:
         if not self.provedores:
             raise SemProvedor("Configure GROQ_API_KEY ou GEMINI_API_KEY no .env para iniciar.")
+        provedores = self.provedores
+        if provedor_fixo is not None:
+            # Rodada de tool-calling já em andamento: sem fallback transparente
+            # para outro provedor, pois o traço de tool_calls (e eventual
+            # thought_signature) é específico do provedor que o gerou.
+            provedores = [p for p in self.provedores if p.nome == provedor_fixo]
+            if not provedores:
+                raise ProvedoresIndisponiveis(
+                    f"Provedor fixo '{provedor_fixo}' não está configurado."
+                )
         diagnosticos: list[str] = []
-        for indice, provedor in enumerate(self.provedores):
-            eh_ultimo = indice == len(self.provedores) - 1
+        for indice, provedor in enumerate(provedores):
+            eh_ultimo = indice == len(provedores) - 1
             exc_final: Exception | None = None
             tentativas = MAX_TENTATIVAS_ULTIMO_PROVEDOR if eh_ultimo else 1
             for tentativa in range(tentativas):
@@ -185,4 +201,4 @@ class RoteadorProvedores:
         raise ProvedoresIndisponiveis(
             "Todas as APIs configuradas estão indisponíveis ou chegaram ao limite. "
             f"Diagnóstico: [{'; '.join(diagnosticos)}]."
-        )
+        ) from exc_final
