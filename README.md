@@ -57,11 +57,24 @@ GROQ_MODEL=openai/gpt-oss-120b
 
 # Optional: fallback for 429 errors, timeouts, or transient failures
 GEMINI_API_KEY=your_new_rotated_key_here
-GEMINI_MODEL=gemini-flash-latest
+GEMINI_MODEL=gemini-3.5-flash-lite
 LLM_TIMEOUT_SECONDS=25
 ```
 
 Never publish `.env`, and never put the key in the README or in the code. The file is in `.gitignore`.
+
+**Why `gemini-3.5-flash-lite` and not `gemini-flash-latest`:** Google's
+`-latest` alias can change its underlying model over time, while a stable,
+explicit model ID improves reproducibility. The initial `gemini-flash-latest`
+live attempt returned HTTP 503, consistent with temporary service overload;
+we cannot establish that the alias itself caused the outage. A subsequent
+Gemini 3.5 Flash-Lite test returned HTTP 400 after a function call because our
+adapter discarded the required opaque `thought_signature`. This was corrected
+by round-tripping the signature unchanged in the tool-call message. Following
+that fix, a real Gemini 3.5 Flash-Lite catalog query completed successfully,
+including the tool call and final response. If your local `.env` still uses
+`GEMINI_MODEL=gemini-flash-latest`, change only that line to
+`GEMINI_MODEL=gemini-3.5-flash-lite`, or override it for a single execution.
 
 Start the support agent:
 
@@ -98,7 +111,7 @@ python -m pytest -q
 
 The suite checks CSV reading, price and stock logic, basic order protection, policy lookup, SQLite history, tool usage, and the Groq-to-fallback switch when an HTTP `429` failure is simulated. It also verifies that an HTTP `400` error is never masked by a fallback retry.
 
-**Checkpoint status:** at the latest verified checkpoint, the offline suite passed **42/42** (independently re-run and confirmed by a reviewing architect pass). This number reflects the offline, mocked-provider suite only — it says nothing about live-model response quality.
+**Checkpoint status:** at the latest verified checkpoint, the offline suite passed **53/53** (independently re-run and confirmed by a reviewing architect pass). This number reflects the offline, mocked-provider suite only — it says nothing about live-model response quality.
 
 ### Real-API demonstration (may consume quota/credits)
 
@@ -116,7 +129,7 @@ python test_atendimento.py | tee exemplos/conversas_reais.md
 
 If Groq rate-limits the requests and a fallback is configured, the agent tries the second API. If no API responds, it reports the problem and keeps the message in history.
 
-**Verify Gemini after configuring a newly rotated key locally:** with `GEMINI_API_KEY` set in ignored `.env`, run `GROQ_API_KEY= python test_atendimento.py --only "Catálogo"`. Setting `GROQ_API_KEY=` for this single command forces a Gemini-only run without changing `.env`; the script will show `Provedor: gemini` and should call `buscar_produtos`. This is a live API call that may consume quota or incur charges; no live Gemini verification was performed while the key was absent. The automated test `python -m pytest -q tests/test_gemini_fallback.py` simulates Groq HTTP 429 and verifies unchanged conversation history is passed to Gemini without contacting either provider.
+**Verify Gemini after configuring a newly rotated key locally:** with `GEMINI_API_KEY` set in ignored `.env`, run `GROQ_API_KEY= python test_atendimento.py --only "Catálogo"`. Setting `GROQ_API_KEY=` for this single command forces a Gemini-only run without changing `.env`; the script will show `Provedor: gemini` and should call `buscar_produtos`. This is a live API call that may consume quota or incur charges. On November 3, 2026, the Gemini-only catalog scenario passed with a real Gemini 3.5 Flash-Lite response and `buscar_produtos` tool call; the captured conversation is available at `exemplos/validacao_gemini.md`. An additional controlled integration test simulated a Groq HTTP 429, sent two prior history messages to the real Gemini API, and obtained a valid tool call and final answer. The Groq failure was simulated, not induced against the live Groq service. The automated test `python -m pytest -q tests/test_gemini_fallback.py` simulates Groq HTTP 429 and verifies unchanged conversation history is passed to Gemini without contacting either provider.
 
 **Reproducible diagnostic history:** `exemplos/diagnostico_inicial.md` preserves the original live run exactly as captured (3/4 by the script's basic metric). Its catalog answer incorrectly denied that acoustic guitars under R$ 1,000 were available even though the CSV contained matching products, and its address scenario failed because the provider was unavailable. This is evidence of problems found, not a passing acceptance run.
 
@@ -163,6 +176,8 @@ This is **retrieval by source-selection rules**, not semantic RAG with embedding
 4. Whichever API responds continues the conversation. New responses go into the same SQLite history.
 5. We do not automatically fall back on HTTP `400`, `401`, or `403`: those errors suggest a configuration, authorization, or invalid-request problem, not a transient overload.
 6. If both fail, the system reports the problem and the question stays recorded for a later retry.
+7. On a `502`/`503`/`504` from the **last configured provider** (no further provider to fail over to), the router retries locally up to twice, with short waits (respecting a numeric `Retry-After` as the minimum delay up to a 10-second budget; if the server requests a longer wait, retries stop) before giving up. Any provider before the last one fails over immediately instead of waiting.
+8. Gemini 3.x models require an opaque `thought_signature` to be sent back, unmodified, with any assistant tool call that continues a conversation. `providers.py` carries this value through as an opaque `extra_content` field (never logged, never inspected, never shown to the user) so `agent.py` can replay it on the next round. Groq does not send this field, so its behavior is unchanged.
 
 **Limits:** we do not transfer hidden internal model state between providers — only the explicit context. There is no guarantee of continuity when both APIs fail. We did not implement a distributed queue, global idempotency, or a cross-process health circuit, because the challenge scope is a local CLI. The Gemini fallback only activates when `GEMINI_API_KEY` is configured, and Google Gemini has its own quota/rate limits and potential cost independent of Groq's.
 
@@ -221,9 +236,9 @@ With more time: add semantic evaluation tests (answer fidelity to source), deter
 
 Planning and the initial implementation proposal were done with help from **ChatGPT**, which supported analysis of the brief, the CSVs, and the PDF, the design of the tools, the fallback, the test structure, and this README. The original `test_atendimento.py` project started with the Groq API and evolved into a modular agent.
 
-This README's English translation, the `providers.py` fallback-diagnostics improvement (sanitized per-provider status/Retry-After detail on final failure), the `tools.py` category-alias narrowing (removing single-instrument aliases like "flauta", "clarinete", "violino", "tuba", "saxofone", and "sintetizador" that previously mapped to entire broad categories, while keeping guitar/violão and safe category-level aliases), and their regression tests were produced with **Claude Code**, reviewed against the existing offline pytest suite (42/42 passing at this checkpoint) and against the specific product-search and fallback-message cases described above.
+This README's English translation, the `providers.py` fallback-diagnostics improvement (sanitized per-provider status/Retry-After detail on final failure), the `tools.py` category-alias narrowing (removing single-instrument aliases like "flauta", "clarinete", "violino", "tuba", "saxofone", and "sintetizador" that previously mapped to entire broad categories, while keeping guitar/violão and safe category-level aliases), and their regression tests were produced with **Claude Code**, reviewed against the existing offline pytest suite (53/53 passing at this checkpoint) and against the specific product-search and fallback-message cases described above.
 
-The Gemini fallback replaced the optional OpenRouter integration in a subsequent, supervised iteration: **ChatGPT** defined the architecture and test criteria, **Claude Code** implemented the adapter configuration and mocked tests, and the result was independently reviewed with **42 passing offline tests**. The actual Google API has **not** been called with a fresh key yet; the Gemini-only live test is documented above.
+The Gemini fallback replaced the optional OpenRouter integration in a subsequent, supervised iteration: **ChatGPT** defined the architecture and test criteria, **Claude Code** implemented the adapter configuration and mocked tests, and the result was independently reviewed with **53 passing offline tests**. The real Google API was subsequently tested with an active local key: a Gemini-only catalog conversation passed (1/1), including `buscar_produtos` and a final answer faithful to the CSV. A separate integration test simulated Groq HTTP 429 (without calling the real Groq API), then sent the existing chat history to the **real Gemini API**; Gemini returned a valid tool call and final answer. These checks establish a working fallback integration, but the primary failure was simulated rather than induced against Groq's live quota.
 
 Responsibility for understanding, testing, and explaining the solution in the interview belongs to the candidate. The Git history should reflect real increments, with no retroactive artificial commits.
 
