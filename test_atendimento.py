@@ -19,6 +19,7 @@ from agent import AgenteAtendimento
 from history import Historico
 from providers import RoteadorProvedores, SemProvedor, ProvedoresIndisponiveis
 from tools import buscar_produtos
+from avaliacao import avaliar_catalogo, avaliar_regras
 
 CENARIOS = [
     ("Catálogo", "Quais violões disponíveis custam até R$ 1.000?", "buscar_produtos"),
@@ -89,11 +90,25 @@ def main(argv: list[str] | None = None) -> int:
         # de contradição abaixo é um complemento, não um substituto desta validação.
         ok = ferramenta in resposta.ferramentas_usadas if ferramenta else not resposta.ferramentas_usadas
         contradiz = resposta_nega_catalogo_confirmado(resposta.texto, resposta.ferramentas_usadas)
-        if contradiz:
+        verificacoes = 0
+        inconsistencias = []
+        if nome == "Catálogo" and "buscar_produtos" in resposta.ferramentas_usadas:
+            verificacoes, inconsistencias = avaliar_catalogo(
+                resposta.texto, buscar_produtos(categoria="Violões", preco_max=1000)["produtos"]
+            )
+            if verificacoes == 0:
+                inconsistencias.append("Nenhum preço ou estoque pôde ser comparado à fonte.")
+        elif nome == "Política" and "consultar_politicas" in resposta.ferramentas_usadas:
+            inconsistencias = avaliar_regras(resposta.texto, "arrependimento")
+        if contradiz or inconsistencias:
             ok = False
         print(f"*Provedor: {resposta.provedor}; tools: {resposta.ferramentas_usadas}; validacao: {'OK' if ok else 'FALHOU'}*\n")
+        if verificacoes:
+            print(f"*Checagens factuais pontuais: {verificacoes} campos comparados à fonte.*\n")
         if contradiz:
             print("**Inconsistência:** resposta nega catálogo que a ferramenta confirmou disponível.\n")
+        for erro in inconsistencias:
+            print(f"**Inconsistência factual:** {erro}\n")
         if not ok:
             falhas += 1
     print(f"**Resultado dos cenários:** {len(cenarios)-falhas}/{len(cenarios)} sem falhas identificadas.")
