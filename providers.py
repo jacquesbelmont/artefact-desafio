@@ -81,6 +81,32 @@ def erro_transitorio(exc: Exception) -> bool:
     return False
 
 
+def _retry_after_seguro(resposta: httpx.Response) -> int | None:
+    """Extrai Retry-After em segundos, se presente e numérico. Nunca repassa o header bruto."""
+    valor = resposta.headers.get("retry-after")
+    if valor is None:
+        return None
+    try:
+        segundos = int(float(valor.strip()))
+    except (ValueError, AttributeError):
+        return None
+    return segundos if segundos >= 0 else None
+
+
+def _diagnostico(provedor_nome: str, exc: Exception) -> str:
+    """Mensagem curta e segura: nome do provedor, status HTTP e Retry-After (se houver).
+
+    Nunca inclui headers brutos, corpo da requisição/resposta, URLs, tokens ou e-mails.
+    """
+    partes = [f"provedor={provedor_nome}", f"tipo={type(exc).__name__}"]
+    if isinstance(exc, httpx.HTTPStatusError):
+        partes.append(f"status={exc.response.status_code}")
+        retry_after = _retry_after_seguro(exc.response)
+        if retry_after is not None:
+            partes.append(f"retry_after_s={retry_after}")
+    return ", ".join(partes)
+
+
 class RoteadorProvedores:
     def __init__(self, provedores: list[Any]):
         self.provedores = list(provedores)
@@ -105,6 +131,7 @@ class RoteadorProvedores:
     def completar(self, mensagens: list[dict], ferramentas: list[dict]) -> RespostaModelo:
         if not self.provedores:
             raise SemProvedor("Configure GROQ_API_KEY ou OPENROUTER_API_KEY no .env para iniciar.")
+        diagnosticos: list[str] = []
         for provedor in self.provedores:
             try:
                 resposta = provedor.completar(mensagens, ferramentas)
@@ -114,9 +141,11 @@ class RoteadorProvedores:
                 if not erro_transitorio(exc):
                     # 400/401/403 e problemas locais não são mascarados como rate limit.
                     raise ProvedoresIndisponiveis(
-                        f"Requisição rejeitada por {provedor.nome} ({type(exc).__name__})."
+                        f"Requisição rejeitada ({_diagnostico(provedor.nome, exc)})."
                     ) from exc
                 # Mesmas mensagens, sem mutá-las, vão para o próximo provedor.
+                diagnosticos.append(_diagnostico(provedor.nome, exc))
         raise ProvedoresIndisponiveis(
-            "Todas as APIs configuradas estão indisponíveis ou chegaram ao limite."
+            "Todas as APIs configuradas estão indisponíveis ou chegaram ao limite. "
+            f"Diagnóstico: [{'; '.join(diagnosticos)}]."
         )

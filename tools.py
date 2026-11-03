@@ -27,6 +27,42 @@ def normalizar(texto: str) -> str:
     return _normalizar(str(texto))
 
 
+# Mapeia variações comuns (sem acento, singular/plural, termos coloquiais) para o
+# nome oficial da categoria em data/categories.csv. O modelo às vezes manda a
+# categoria no campo "nome" (ex.: nome="violões"), então os dois campos passam
+# por esta resolução antes de filtrar.
+ALIASES_CATEGORIA: dict[str, str] = {
+    "violao": "Violões",
+    "violoes": "Violões",
+    "guitarra": "Guitarras",
+    "guitarras": "Guitarras",
+    "baixo": "Baixos",
+    "baixos": "Baixos",
+    "contrabaixo": "Baixos",
+    "bateria": "Baterias e Percussão",
+    "baterias": "Baterias e Percussão",
+    "percussao": "Baterias e Percussão",
+    "teclado": "Teclados e Pianos",
+    "teclados": "Teclados e Pianos",
+    "piano": "Teclados e Pianos",
+    "pianos": "Teclados e Pianos",
+    "sopro madeira": "Instrumentos de Sopro (Madeiras)",
+    "madeiras": "Instrumentos de Sopro (Madeiras)",
+    "sopro metal": "Instrumentos de Sopro (Metais)",
+    "metais": "Instrumentos de Sopro (Metais)",
+    "cordas orquestrais": "Cordas Orquestrais",
+    "ukulele": "Ukuleles",
+    "ukuleles": "Ukuleles",
+}
+
+
+def resolver_categoria(texto: str) -> str | None:
+    """Resolve uma variação coloquial/sem acento para o nome oficial da categoria."""
+    if not texto:
+        return None
+    return ALIASES_CATEGORIA.get(normalizar(texto.strip()))
+
+
 def moeda(valor: Decimal) -> str:
     valor = valor.quantize(CENTAVOS, rounding=ROUND_HALF_UP)
     return "R$ " + f"{valor:,.2f}".replace(",", "_").replace(".", ",").replace("_", ".")
@@ -51,6 +87,18 @@ def buscar_produtos(nome: str = "", categoria: str = "", preco_max: float | None
     limite_preco = Decimal(str(preco_max)) if preco_max is not None else None
     if limite_preco is not None and limite_preco < 0:
         raise ValueError("Preço máximo precisa ser positivo")
+
+    # O modelo às vezes manda a categoria no campo "nome" (ex.: nome="violões").
+    # Se "nome" na verdade é uma categoria conhecida e "categoria" não foi informada,
+    # tratamos como filtro de categoria em vez de substring no nome do produto.
+    if nome and not categoria:
+        alvo = resolver_categoria(nome)
+        if alvo:
+            categoria, nome = alvo, ""
+    categoria_resolvida = resolver_categoria(categoria)
+    if categoria_resolvida:
+        categoria = categoria_resolvida
+
     encontrados = []
     for p in tabela("products"):
         if p["status"] != "active" or int(p["stock_quantity"]) <= 0:
