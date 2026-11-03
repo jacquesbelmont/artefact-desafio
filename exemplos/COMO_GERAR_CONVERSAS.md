@@ -1,20 +1,20 @@
-# Conversas de demonstração
+# Demo conversations
 
-O desafio pede de **3 a 5 conversas variadas**, incluindo cenário não trivial.
+The challenge asks for **3 to 5 varied conversations**, including one non-trivial scenario.
 
-**Não considere este arquivo uma conversa real.** Os exemplos devem vir da execução do agente com uma API configurada.
+**Do not treat this file as a real conversation.** The examples must come from actually running the agent against a configured API.
 
-Execute na raiz do projeto:
+Run from the project root:
 
 ```bash
 python test_atendimento.py | tee exemplos/conversas_reais.md
 ```
 
-Depois abra `exemplos/conversas_reais.md` e confirme que as respostas realmente consultaram ferramentas. Corrija qualquer falha antes da entrega.
+Then open `exemplos/conversas_reais.md` and confirm the responses genuinely consulted the tools. Fix any failure before submitting.
 
-Sugestões extras no CLI:
-- Pedido sem e-mail: `Qual o status do pedido 2?` (deve solicitar verificação)
-- Produto esgotado: peça um item indisponível, confirmando que não seja oferecido como disponível
-- Promoção: pergunte pela validade (não há datas de vigência no CSV)
+Extra suggestions for the CLI:
+- Order without an email: `Qual o status do pedido 2?` (should ask for verification)
+- Out-of-stock product: ask for an unavailable item, confirming it is not offered as available
+- Promotion: ask about its validity (there are no start/end dates in the CSV)
 
-Evite registrar no Git dados pessoais reais ou credenciais.
+Avoid committing real personal data or credentials to Git.
