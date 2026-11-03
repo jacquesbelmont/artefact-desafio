@@ -74,11 +74,18 @@ class AgenteAtendimento:
             if len(resposta.chamadas) > MAX_CHAMADAS_POR_RODADA:
                 raise RuntimeError("O modelo solicitou ferramentas demais.")
 
-            chamadas = [{
-                "id": c.id,
-                "type": "function",
-                "function": {"name": c.nome, "arguments": c.argumentos_json},
-            } for c in resposta.chamadas]
+            chamadas = []
+            for c in resposta.chamadas:
+                chamada = {
+                    "id": c.id,
+                    "type": "function",
+                    "function": {"name": c.nome, "arguments": c.argumentos_json},
+                }
+                if c.extra_content is not None:
+                    # Gemini 3.x exige o thought_signature opaco de volta na mesma chamada
+                    # para validar a cadeia de raciocínio; nunca inspecionamos seu conteúdo.
+                    chamada["extra_content"] = c.extra_content
+                chamadas.append(chamada)
             mensagens.append({
                 "role": "assistant",
                 "content": resposta.texto or None,

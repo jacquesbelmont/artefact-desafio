@@ -8,6 +8,7 @@ https://ai.google.dev/gemini-api/docs/openai
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -27,6 +28,7 @@ class ChamadaFerramenta:
     id: str
     nome: str
     argumentos_json: str
+    extra_content: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -67,6 +69,7 @@ class ProvedorOpenAICompativel:
                 id=c["id"],
                 nome=c["function"]["name"],
                 argumentos_json=c["function"].get("arguments", "{}"),
+                extra_content=c.get("extra_content") if isinstance(c.get("extra_content"), dict) else None,
             ) for c in (msg.get("tool_calls") or [])
         ]
         return RespostaModelo(
@@ -93,6 +96,19 @@ def _retry_after_seguro(resposta: httpx.Response) -> int | None:
     except (ValueError, AttributeError):
         return None
     return segundos if segundos >= 0 else None
+
+
+MAX_TENTATIVAS_ULTIMO_PROVEDOR = 3  # 1 tentativa inicial + 2 retries
+ESPERAS_RETRY_S = (1, 2)
+MAX_ESPERA_RETRY_AFTER_S = 10  # não insistir quando servidor pede espera longa
+
+
+def _eh_5xx_retentavel(exc: Exception) -> bool:
+    """502/503/504 (ou 5xx genérico) justificam retry local no último provedor.
+
+    429/408 não entram aqui: são rate limit/timeout, tratados só por fallback.
+    """
+    return isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code >= 500
 
 
 def _diagnostico(provedor_nome: str, exc: Exception) -> str:
@@ -126,7 +142,7 @@ class RoteadorProvedores:
         if chave := os.getenv("GEMINI_API_KEY", "").strip():
             provedores.append(ProvedorOpenAICompativel(
                 "gemini", "https://generativelanguage.googleapis.com/v1beta/openai", chave,
-                os.getenv("GEMINI_MODEL", "gemini-flash-latest"), timeout,
+                os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite"), timeout,
             ))
         return cls(provedores)
 
@@ -134,19 +150,38 @@ class RoteadorProvedores:
         if not self.provedores:
             raise SemProvedor("Configure GROQ_API_KEY ou GEMINI_API_KEY no .env para iniciar.")
         diagnosticos: list[str] = []
-        for provedor in self.provedores:
-            try:
-                resposta = provedor.completar(mensagens, ferramentas)
-                self.ultimo_provedor = provedor.nome
-                return resposta
-            except Exception as exc:
-                if not erro_transitorio(exc):
-                    # 400/401/403 e problemas locais não são mascarados como rate limit.
-                    raise ProvedoresIndisponiveis(
-                        f"Requisição rejeitada ({_diagnostico(provedor.nome, exc)})."
-                    ) from exc
-                # Mesmas mensagens, sem mutá-las, vão para o próximo provedor.
-                diagnosticos.append(_diagnostico(provedor.nome, exc))
+        for indice, provedor in enumerate(self.provedores):
+            eh_ultimo = indice == len(self.provedores) - 1
+            exc_final: Exception | None = None
+            tentativas = MAX_TENTATIVAS_ULTIMO_PROVEDOR if eh_ultimo else 1
+            for tentativa in range(tentativas):
+                try:
+                    resposta = provedor.completar(mensagens, ferramentas)
+                    self.ultimo_provedor = provedor.nome
+                    return resposta
+                except Exception as exc:
+                    exc_final = exc
+                    # Só retenta localmente no último provedor e só para 5xx transitório.
+                    pode_retentar = eh_ultimo and _eh_5xx_retentavel(exc) and tentativa < tentativas - 1
+                    if not pode_retentar:
+                        break
+                    espera = ESPERAS_RETRY_S[tentativa]
+                    if isinstance(exc, httpx.HTTPStatusError):
+                        retry_after = _retry_after_seguro(exc.response)
+                        if retry_after is not None:
+                            # Retry-After é espera MÍNIMA, não teto. Se o servidor
+                            # pedir mais do que nosso orçamento, não repetimos.
+                            if retry_after > MAX_ESPERA_RETRY_AFTER_S:
+                                break
+                            espera = max(espera, retry_after)
+                    time.sleep(espera)
+            if not erro_transitorio(exc_final):
+                # 400/401/403 e problemas locais não são mascarados como rate limit.
+                raise ProvedoresIndisponiveis(
+                    f"Requisição rejeitada ({_diagnostico(provedor.nome, exc_final)})."
+                ) from exc_final
+            # Mesmas mensagens, sem mutá-las, vão para o próximo provedor.
+            diagnosticos.append(_diagnostico(provedor.nome, exc_final))
         raise ProvedoresIndisponiveis(
             "Todas as APIs configuradas estão indisponíveis ou chegaram ao limite. "
             f"Diagnóstico: [{'; '.join(diagnosticos)}]."

@@ -48,7 +48,7 @@ def test_groq_429_cai_para_gemini_compativel_com_openai(monkeypatch):
         assert req.headers["Authorization"] == "Bearer chave-gemini-fake"
         corpo = json.loads(req.content)
         assert corpo["messages"] == historico
-        assert corpo["model"] == "gemini-flash-latest"
+        assert corpo["model"] == "gemini-3.5-flash-lite"
         assert corpo["tools"][0]["function"]["name"] == "buscar_produtos"
         return httpx.Response(200, json={
             "choices": [{"message": {

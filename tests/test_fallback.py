@@ -50,7 +50,89 @@ def test_erro_400_nao_dispara_fallback():
     assert not reserva.recebidas
 
 
-def test_todas_as_apis_falham():
+def test_retry_local_no_ultimo_provedor_503_duas_vezes_depois_sucesso(monkeypatch):
+    """503, 503, 200: deve tentar 3x (1 inicial + 2 retries) e ter sucesso, dormindo 1s e 2s."""
+    esperas = []
+    monkeypatch.setattr("providers.time.sleep", lambda s: esperas.append(s))
+
+    respostas = [erro_http(503), erro_http(503), RespostaModelo("ok", [], "reserva")]
+
+    class ProvedorComFilaDeRespostas:
+        nome = "reserva"
+        def __init__(self):
+            self.chamadas = 0
+        def completar(self, mensagens, ferramentas):
+            r = respostas[self.chamadas]
+            self.chamadas += 1
+            if isinstance(r, Exception):
+                raise r
+            return r
+
+    reserva = ProvedorComFilaDeRespostas()
+    roteador = RoteadorProvedores([reserva])
+    resultado = roteador.completar([{"role": "user", "content": "Oi"}], [])
+
+    assert resultado.provedor == "reserva"
+    assert reserva.chamadas == 3
+    assert esperas == [1, 2]
+
+
+def test_groq_503_cai_imediato_para_gemini_sem_dormir(monkeypatch):
+    """Groq não é o último provedor: falha e cai pro próximo sem esperar/retentar."""
+    esperas = []
+    monkeypatch.setattr("providers.time.sleep", lambda s: esperas.append(s))
+
+    principal = ProvedorFalso("groq", erro_http(503))
+    reserva = ProvedorFalso("reserva", RespostaModelo("ok", [], "reserva"))
+    roteador = RoteadorProvedores([principal, reserva])
+    resultado = roteador.completar([{"role": "user", "content": "Oi"}], [])
+
+    assert resultado.provedor == "reserva"
+    assert len(principal.recebidas) == 1
+    assert esperas == []
+
+
+def test_retry_local_esgota_tentativas_e_cai_para_proximo_provedor(monkeypatch):
+    """Groq não é o último: 503 falha imediatamente (sem retry) e cai para o próximo.
+    Já no último provedor (reserva), 503 persistente esgota os 2 retries e falha
+    definitivamente, levantando ProvedoresIndisponiveis com diagnóstico de ambos."""
+    monkeypatch.setattr("providers.time.sleep", lambda s: None)
+
+    principal = ProvedorFalso("groq", erro_http(503))
+    reserva = ProvedorFalso("reserva", erro_http(503))
+    with pytest.raises(ProvedoresIndisponiveis) as exc_info:
+        RoteadorProvedores([principal, reserva]).completar([{"role": "user", "content": "Oi"}], [])
+    assert len(reserva.recebidas) == 3
+    assert "groq" in str(exc_info.value)
+    assert "reserva" in str(exc_info.value)
+
+
+@pytest.mark.parametrize("retry_after, espera_esperada", [("0", 1), ("4", 4)])
+def test_retry_respeita_retry_after_como_espera_minima(monkeypatch, retry_after, espera_esperada):
+    esperas = []
+    monkeypatch.setattr("providers.time.sleep", lambda s: esperas.append(s))
+
+    respostas = [erro_http_com_retry_after(503, retry_after), RespostaModelo("ok", [], "reserva")]
+
+    class ProvedorComFilaDeRespostas:
+        nome = "reserva"
+        def __init__(self):
+            self.chamadas = 0
+        def completar(self, mensagens, ferramentas):
+            r = respostas[self.chamadas]
+            self.chamadas += 1
+            if isinstance(r, Exception):
+                raise r
+            return r
+
+    reserva = ProvedorComFilaDeRespostas()
+    roteador = RoteadorProvedores([reserva])
+    roteador.completar([{"role": "user", "content": "Oi"}], [])
+    assert esperas == [espera_esperada]
+
+
+def test_todas_as_apis_falham(monkeypatch):
+    monkeypatch.setattr("providers.time.sleep", lambda s: None)
     prim = ProvedorFalso("groq", erro_http(429))
     res = ProvedorFalso("reserva", erro_http(503))
     with pytest.raises(ProvedoresIndisponiveis):
@@ -102,7 +184,8 @@ def test_groq_429_sem_reserva_mensagem_final_tem_diagnostico_sanitizado():
     assert "exemplo.test" not in mensagem
 
 
-def test_ambas_apis_com_falha_transitoria_incluem_diagnostico_de_cada_provedor():
+def test_ambas_apis_com_falha_transitoria_incluem_diagnostico_de_cada_provedor(monkeypatch):
+    monkeypatch.setattr("providers.time.sleep", lambda s: None)
     principal = ProvedorFalso("groq", erro_http_com_retry_after(429, "5"))
     reserva = ProvedorFalso("reserva", erro_http(503))
     with pytest.raises(ProvedoresIndisponiveis) as exc_info:
