@@ -28,7 +28,7 @@ cp -n .env.example .env
 nano .env
 ```
 
-No `nano`, preencha `GROQ_API_KEY` com sua chave e deixe `OPENROUTER_API_KEY` vazia se ainda não possuir uma segunda chave. Pressione `Ctrl + O`, Enter e `Ctrl + X` para salvar/sair. **Não compartilhe a chave no chat**.
+No `nano`, preencha `GROQ_API_KEY` com sua chave e deixe `GEMINI_API_KEY` vazia se ainda não possuir uma segunda chave. Pressione `Ctrl + O`, Enter e `Ctrl + X` para salvar/sair. **Não compartilhe a chave no chat**.
 
 ## Passo 3 — Testar sem gastar tokens
 

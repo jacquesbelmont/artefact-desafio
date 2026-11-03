@@ -1,7 +1,9 @@
 """Duas APIs com o mesmo contrato HTTP de Chat Completions + fallback.
 
 A implementação usa httpx diretamente em vez de instalar dois SDKs diferentes.
-Groq e OpenRouter expõem endpoints compatíveis com o formato OpenAI.
+Groq e Google Gemini (via sua camada de compatibilidade OpenAI) expõem
+endpoints compatíveis com o formato OpenAI. Veja:
+https://ai.google.dev/gemini-api/docs/openai
 """
 from __future__ import annotations
 
@@ -121,16 +123,16 @@ class RoteadorProvedores:
                 "groq", "https://api.groq.com/openai/v1", chave,
                 os.getenv("GROQ_MODEL", "openai/gpt-oss-120b"), timeout,
             ))
-        if chave := os.getenv("OPENROUTER_API_KEY", "").strip():
+        if chave := os.getenv("GEMINI_API_KEY", "").strip():
             provedores.append(ProvedorOpenAICompativel(
-                "openrouter", "https://openrouter.ai/api/v1", chave,
-                os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini"), timeout,
+                "gemini", "https://generativelanguage.googleapis.com/v1beta/openai", chave,
+                os.getenv("GEMINI_MODEL", "gemini-flash-latest"), timeout,
             ))
         return cls(provedores)
 
     def completar(self, mensagens: list[dict], ferramentas: list[dict]) -> RespostaModelo:
         if not self.provedores:
-            raise SemProvedor("Configure GROQ_API_KEY ou OPENROUTER_API_KEY no .env para iniciar.")
+            raise SemProvedor("Configure GROQ_API_KEY ou GEMINI_API_KEY no .env para iniciar.")
         diagnosticos: list[str] = []
         for provedor in self.provedores:
             try:

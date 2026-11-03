@@ -19,7 +19,7 @@ Client (CLI)
 main.py -> agent.py -> history.py (local SQLite)
                |
                +--> providers.py --> Groq (primary)
-               |                 \--> OpenRouter (optional fallback)
+               |                 \--> Google Gemini, OpenAI-compatible endpoint (optional fallback)
                |
                +--> tools.py --> CSVs: products/orders/customers/promotions
                |            \--> policies.py --> policy PDF (pages)
@@ -33,8 +33,9 @@ main.py -> agent.py -> history.py (local SQLite)
 
 - macOS, Linux, or Windows with Python **3.11 or higher**.
 - Internet access for calls to the language model.
-- A **Groq** key for the primary demo, or an **OpenRouter** key to run with only the fallback.
+- A **Groq** key for the primary demo, or a **Google Gemini** key (generated at https://aistudio.google.com/apikey) to run with only the fallback.
 - The fallback API is **optional**; there is no requirement to register a card or spend credits to run the automated tests.
+- **Security note:** if a Gemini key was ever pasted into a chat, document, or any non-secret channel, treat it as compromised — revoke/rotate it in Google AI Studio and generate a new one. Put only the new key in your local `.env` (which is git-ignored) and never commit it or paste it anywhere again.
 
 ## 3. How to install and run
 
@@ -55,8 +56,8 @@ GROQ_API_KEY=your_key_here
 GROQ_MODEL=openai/gpt-oss-120b
 
 # Optional: fallback for 429 errors, timeouts, or transient failures
-OPENROUTER_API_KEY=
-OPENROUTER_MODEL=openai/gpt-4o-mini
+GEMINI_API_KEY=your_new_rotated_key_here
+GEMINI_MODEL=gemini-flash-latest
 LLM_TIMEOUT_SECONDS=25
 ```
 
@@ -97,7 +98,7 @@ python -m pytest -q
 
 The suite checks CSV reading, price and stock logic, basic order protection, policy lookup, SQLite history, tool usage, and the Groq-to-fallback switch when an HTTP `429` failure is simulated. It also verifies that an HTTP `400` error is never masked by a fallback retry.
 
-**Checkpoint status:** at the latest verified checkpoint, the offline suite passed **38/38** (independently re-run and confirmed by a reviewing architect pass). This number reflects the offline, mocked-provider suite only — it says nothing about live-model response quality.
+**Checkpoint status:** at the latest verified checkpoint, the offline suite passed **42/42** (independently re-run and confirmed by a reviewing architect pass). This number reflects the offline, mocked-provider suite only — it says nothing about live-model response quality.
 
 ### Real-API demonstration (may consume quota/credits)
 
@@ -115,6 +116,8 @@ python test_atendimento.py | tee exemplos/conversas_reais.md
 
 If Groq rate-limits the requests and a fallback is configured, the agent tries the second API. If no API responds, it reports the problem and keeps the message in history.
 
+**Verify Gemini after configuring a newly rotated key locally:** with `GEMINI_API_KEY` set in ignored `.env`, run `GROQ_API_KEY= python test_atendimento.py --only "Catálogo"`. Setting `GROQ_API_KEY=` for this single command forces a Gemini-only run without changing `.env`; the script will show `Provedor: gemini` and should call `buscar_produtos`. This is a live API call that may consume quota or incur charges; no live Gemini verification was performed while the key was absent. The automated test `python -m pytest -q tests/test_gemini_fallback.py` simulates Groq HTTP 429 and verifies unchanged conversation history is passed to Gemini without contacting either provider.
+
 **Reproducible diagnostic history:** `exemplos/diagnostico_inicial.md` preserves the original live run exactly as captured (3/4 by the script's basic metric). Its catalog answer incorrectly denied that acoustic guitars under R$ 1,000 were available even though the CSV contained matching products, and its address scenario failed because the provider was unavailable. This is evidence of problems found, not a passing acceptance run.
 
 **Live validation after fixes:** `exemplos/conversas_reais.md` records a later, genuine four-scenario Groq run with **4/4 checks passing**, including actual policy and catalog tool calls. The displayed acoustic guitar products and prices were cross-checked against the CSV. This score is a limited scripted check, **not proof of production readiness or complete factual accuracy**: the return-policy answer still suggests sharing customer details to initiate a return, although this prototype cannot actually open or forward a return request. That requires a real human handoff or further response safeguards.
@@ -128,9 +131,9 @@ If Groq rate-limits the requests and a fallback is configured, the agent tries t
 | **Python + CLI** | FastAPI, Streamlit, WhatsApp | A CLI is sufficient and keeps the evaluation focused on agent behavior. |
 | **Single agent with tools** | Multi-agent system / unbounded ReAct | The problem has three well-defined queries; fewer moving parts means fewer failure modes. |
 | **Function calling** | A prompt with all the CSVs embedded | The model requests Python functions and receives verifiable results. |
-| **HTTPX + OpenAI Chat Completions contract** | A vendor-specific Groq/OpenRouter SDK | Groq and OpenRouter both accept a common HTTP format, making it easy to add other providers. |
+| **HTTPX + OpenAI Chat Completions contract** | A vendor-specific Groq/Gemini SDK | Groq and Google Gemini (via its OpenAI-compatible endpoint) both accept a common HTTP format, making it easy to add other providers. |
 | **Groq as primary** | A local model | The project's first experiment already used Groq, and the goal was to ship in 1–2 days. |
-| **OpenRouter as optional** | Unlimited retries on the same provider | Lets the 429 fallback path be proven without depending on a single vendor. |
+| **Google Gemini as optional fallback** | Unlimited retries on the same provider, or OpenRouter | Lets the 429 fallback path be proven without depending on a single vendor. Gemini exposes an OpenAI-compatible `chat/completions` endpoint (`https://generativelanguage.googleapis.com/v1beta/openai`), so it reuses the same `ProvedorOpenAICompativel` adapter as Groq with no new SDK or dependency. **Important:** this compatibility endpoint is a different schema from Gemini's native `generateContent` endpoint shown in Google's quick-start curl examples — this project only talks to the OpenAI-compatible path, never `generateContent`. |
 | **CSV via the standard `csv` library** | pandas, PostgreSQL, a SQL agent | Six small tables; `csv` avoids extra infrastructure and dependencies. |
 | **Topic-based policy lookup + PDF pages** | Vector-embedding RAG | The manual is eight pages. Selecting relevant pages is simple, auditable, and sufficient for the MVP. |
 | **SQLite for conversation history** | Redis/PostgreSQL | Ships with Python, persists context across restarts, and has no external service dependency. |
@@ -156,12 +159,12 @@ This is **retrieval by source-selection rules**, not semantic RAG with embedding
 
 1. `history.py` saves the customer's messages to SQLite **before** calling the model.
 2. `providers.py` tries Groq first (when configured).
-3. On HTTP `429`, `408`, `5xx`, a connection failure, or a timeout, it tries OpenRouter (when configured), sending **the same messages**, including history and any tool results already produced.
+3. On HTTP `429`, `408`, `5xx`, a connection failure, or a timeout, it tries Google Gemini (when configured), sending **the same messages**, including history and any tool results already produced.
 4. Whichever API responds continues the conversation. New responses go into the same SQLite history.
 5. We do not automatically fall back on HTTP `400`, `401`, or `403`: those errors suggest a configuration, authorization, or invalid-request problem, not a transient overload.
 6. If both fail, the system reports the problem and the question stays recorded for a later retry.
 
-**Limits:** we do not transfer hidden internal model state between providers — only the explicit context. There is no guarantee of continuity when both APIs fail. We did not implement a distributed queue, global idempotency, or a cross-process health circuit, because the challenge scope is a local CLI.
+**Limits:** we do not transfer hidden internal model state between providers — only the explicit context. There is no guarantee of continuity when both APIs fail. We did not implement a distributed queue, global idempotency, or a cross-process health circuit, because the challenge scope is a local CLI. The Gemini fallback only activates when `GEMINI_API_KEY` is configured, and Google Gemini has its own quota/rate limits and potential cost independent of Groq's.
 
 The fallback only handles **read-only tools**. For tools that process payments, modify orders, or send real messages, effect idempotency must be implemented before retrying calls.
 
@@ -208,7 +211,7 @@ These ambiguities are documented, not hidden. Artefact's brief allows a reasonab
 - Email-based order validation is weak and must not be used in production. The local SQLite also stores messages in plain text; sensitive data would require additional controls in production.
 - SQLite stores final messages; intermediate tool steps are replayed in each turn's context but not persisted as independent events.
 - Switching between models does not preserve internal state or private reasoning, only explicit history.
-- The fallback offers no availability or budget guarantees; the fallback model may have different rates and restrictions.
+- The fallback offers no availability or budget guarantees; Google Gemini may have different quota, rate limits, and cost than Groq, and the fallback only works when `GEMINI_API_KEY` is configured.
 - There is still no web interface, real human support, strong authentication, centralized observability, or WhatsApp integration.
 - The PDF may include a legally questionable rule; this prototype **does not provide legal advice**.
 
@@ -218,7 +221,9 @@ With more time: add semantic evaluation tests (answer fidelity to source), deter
 
 Planning and the initial implementation proposal were done with help from **ChatGPT**, which supported analysis of the brief, the CSVs, and the PDF, the design of the tools, the fallback, the test structure, and this README. The original `test_atendimento.py` project started with the Groq API and evolved into a modular agent.
 
-This README's English translation, the `providers.py` fallback-diagnostics improvement (sanitized per-provider status/Retry-After detail on final failure), the `tools.py` category-alias narrowing (removing single-instrument aliases like "flauta", "clarinete", "violino", "tuba", "saxofone", and "sintetizador" that previously mapped to entire broad categories, while keeping guitar/violão and safe category-level aliases), and their regression tests were produced with **Claude Code**, reviewed against the existing offline pytest suite (38/38 passing at this checkpoint) and against the specific product-search and fallback-message cases described above.
+This README's English translation, the `providers.py` fallback-diagnostics improvement (sanitized per-provider status/Retry-After detail on final failure), the `tools.py` category-alias narrowing (removing single-instrument aliases like "flauta", "clarinete", "violino", "tuba", "saxofone", and "sintetizador" that previously mapped to entire broad categories, while keeping guitar/violão and safe category-level aliases), and their regression tests were produced with **Claude Code**, reviewed against the existing offline pytest suite (42/42 passing at this checkpoint) and against the specific product-search and fallback-message cases described above.
+
+The Gemini fallback replaced the optional OpenRouter integration in a subsequent, supervised iteration: **ChatGPT** defined the architecture and test criteria, **Claude Code** implemented the adapter configuration and mocked tests, and the result was independently reviewed with **42 passing offline tests**. The actual Google API has **not** been called with a fresh key yet; the Gemini-only live test is documented above.
 
 Responsibility for understanding, testing, and explaining the solution in the interview belongs to the candidate. The Git history should reflect real increments, with no retroactive artificial commits.
 
@@ -227,7 +232,7 @@ Responsibility for understanding, testing, and explaining the solution in the in
 - Artefact challenge brief — document provided separately to the candidate, **not included in this repository**.
 - [Groq — OpenAI compatibility](https://console.groq.com/docs/openai)
 - [Groq — Rate limits and 429](https://console.groq.com/docs/rate-limits)
-- [OpenRouter — OpenAI-compatible API](https://openrouter.ai/developers)
+- [Google Gemini — OpenAI compatibility](https://ai.google.dev/gemini-api/docs/openai)
 - [HTTPX](https://www.python-httpx.org/)
 - [pypdf](https://pypdf.readthedocs.io/)
 
